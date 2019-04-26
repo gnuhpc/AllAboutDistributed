@@ -1,0 +1,92 @@
+一 、创建命名空间
+kubectl create namespace zm
+
+发现k8s自动创建了一个保密字典Secret，在k8s中拉取私有镜像需要保密字典。
+这里有涉及一个配置字典ConfigMap，使用容器部署时，把配置应该从应用程序镜像中解耦出来，以保证镜像的可移植性
+尽管Secret保密字典允许类似于验证信息和秘钥等信息从应用中解耦出来，但在K8S1.2前并没有为了普通的或者非secret配置而存在的对象。在K8S1.2后引入ConfigMap来处理这种类型的配置数据。
+
+ConfigMap是存储通用的配置变量的，类似于配置文件，使用户可以将分布式系统中用于不同模块的环境变量统一到一个对象中管理；而它与配置文件的区别在于它是存在集群的“环境”中的，并且支持K8S集群中所有通用的操作调用方式。从数据角度来看，ConfigMap的类型只是键值组，用于存储被Pod资源对象访问的信息。这与secret保密字典的设计理念有异曲同工之妙，主要区别在于ConfigMap通常不用于存储敏感信息，而只存储简单的文本信息。这个后面会用到
+
+二、部署mysql
+cd zm/mysql
+1.创建mysql-rc.yaml
+2.创建mysql-svc.yaml
+3.k8s 执行文件，下载mysql镜像和运行mysqlr容器
+kubectl create -f mysql-rc.yaml
+kubectl create -f mysql-svc.yaml
+
+Controler Manager由多种controller组成，包括Replication Controller，Endpoints Controller，Node Controller，Service Account & Token Controllers，namespace Controller
+不同得controller管理不同得资源
+Replication Controller：管理Deployment、ReplicaSet、Statefulset、DaemonSet的生命周期（以前RC也是一种kind，但是慢慢的其层级上升了，变成了一个管理术语了，但是管理机制变得不一样了，原来得RC是只有副本控制器，没有副本集也没有部署，现在Deployment或ReplicaSet是副本集，然后有部署，这两种写法上还是有区别得）
+（1）Deployment:管理pod多个副本
+（2）ReplicaSet：说白了是个副本管理器，Deployment自动创建ReplicaSet，不需要直接使用ReplicaSet，可以页面看到的
+（3）DaemonSet：每个Node最多运行一个pod副本
+（4）Statefulset：当节点挂掉，既pod重新调度后其PodName和HostName不变，既pod重新调度能访问到相同的持久化存储，基于PVC实现，有序
+namespace Controller：管理Namespace资源
+Service Controller：管理维护Service，提供负载以及服务代理。
+EndPoints Controller：管理维护Endpoints，关联Service和Pod，创建Endpoints为Service的后端，当Pod发生变化时，实时更新Endpoints。
+
+
+4.登陆到mysql中， 在node02（随便）节点登陆（最好两个节点）
+docker ps -a |grep mysql
+通过上面的命令，获得mysql容器的CONTAINER ID，即下面命令的bc1c0034fbf7参数
+docker exec -it a3d29c432f8a /bin/bash
+在容器内登录mysql。即在node节点登陆mysql,在mysql-rc中设置的密码。
+mysql -uroot -pmysql
+对mysql进行如下设置，使得具有外部访问权限
+alter user 'root'@'%' identified with mysql_native_password by'root';
+alter  user 'root'@'%' identified by 'mysql';
+
+这里可以做实验，看看是否可以连，然后实验还表明了，容器开放出的端口实际上物理机上是没有的，但ip有，所以容器内部可ping通
+然后也表明了容器内部是自带负载均衡的。
+
+三、Hands On: Using Prometheus for Monitoring，这块其实包含两个实验部分，一个是部署Prometheus，一个是部署adaptor容器
+1、部署Prometheus
+cd zm/prometheus
+首先要部署角色，实际上这里还用到了角色绑定ClusterRoleBinding，在整个集群级别和所有namespaces将特定的subject与ClusterRole绑定，授予权限。在这里其实就是允许在服务用户”prometheus”可以读取集群中任何namespace中的pods，也包括  - nodes - nodes/proxy - services - endpoints - pods。因为这里面Prometheus是可以监控整个k8s状态的,所以必须要具备这个权限赋予的过程，这个角色生命周期和namespace是无关的
+kubectl create -f cluster-role.yaml
+然后配置参数，这里主要是配置Prometheus要监控什么，是以一种配置参数的方式configmap传递进去的，实际上配置了两种类型的监控，一种是k8s的，一堆job，还有一个job是mysql的，可以看到需要配置一些需要监听的ip和端口，这个ip和端口都是adaptor去暴露出去的。
+kubectl create -f config-map.yaml
+运行之后就可以看到增加了一个prometheus-server-conf的配置字典，页面上也能查看和修改
+然后开始部署prometheus，里面主要关注三点，一个是挂载了一个最简单的emptyDir的方式去挂在Volume用来存储监控抓取到的数据（emptyDir生命周期和pod是一致的），第二个是通过volume方式加载了之前创建的configmap（也可以通过环境变量的方式），最后是注意其本身Prometheus开放出来的端口是9090
+kubectl create -f prometheus-deployment.yaml
+然后开始创建服务，这块很简单，就是我容器端口和集群端口都是9090，对外端口我设置成了30909
+kubectl create -f prometheus-service.yaml
+这里有个问题，能不能把外部端口也设置成30909呢？
+The Service "prometheus-service" is invalid: spec.ports[0].nodePort: Invalid value: 9090: provided port is not in the valid range. The range of valid ports is 30000-32767
+为了k8s和别的程序不起冲突，默认端口的范围是 30000-32767 ，不过这个也可以改的，然后试了一下，都设置成一个端口也是可以的，但是和容器开放出的端口不一致会导致服务访问不到
+
+2、部署adaptor容器，也就是export节点
+（1）首先部署node_export节点，也就是说我要监控mysql实际上包含两个部分，一个是mysql容器所在物理节点机的性能指标，一个是mysql内部的性能指标。而node_export_prod正是监控节点的，实际上如果mysql pod现在分布在两台物理机上，那么实际上在prometheus那里应该配置两个ip。可以看到增加一种类型守护进程集，注意这里部署和服务是一起做的
+kubectl create -f node_export_prod.yaml
+（2）然后开始部署mysql监控的export节点，比如我们现在想去监视物理机上的这台mysql
+./mysqld_exporter -config.my-cnf=".my.cnf"
+发现也可以，但是这不是我们adaptor的监控方式，我们还是想通过外挂容器的方式去监控
+kubectl create -f mysql_export_prod.yaml
+这里面内部容器的端口就是9104，这个和prometheus配置的target中的端口是一样的，这里其实也应该在prometheus那里应该配置两个ip，注意这里面其实用不着服务，写道一起真是创建时服务时看不见的
+这里面留了一个问题，我没有创建nodeport服务，为什么我可以prometheus可以直接访问物理机的端口去获取监控数据呢？
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+DaemonSet 创建的pod使用 hostPort, 所以通过node IP就可以通信

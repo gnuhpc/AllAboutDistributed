@@ -1,0 +1,132 @@
+kubectl create namespace tina
+
+1. prometheus监控redis
+
+安装prometheus
+docker pull prom/prometheus
+cd /media/ssd/wenqiao/prometheus/conf
+vi prometheus.yml
+wenqiao@gnuhpc-pc:~/prometheus/conf$ cat prometheus.yml
+global:
+  scrape_interval: 15s
+  scrape_timeout: 10s
+  evaluation_interval: 15s
+alerting:
+  alertmanagers:
+  - static_configs:
+    - targets: []
+    scheme: http
+    timeout: 10s
+scrape_configs:
+- job_name: prometheus
+  honor_timestamps: true
+  scrape_interval: 15s
+  scrape_timeout: 10s
+  metrics_path: /metrics
+  scheme: http
+  static_configs:
+  - targets:
+    - 192.168.50.229:19090
+
+docker run -d -p 19090:9090 -v ~/prometheus/conf/prometheus.yml:/etc/prometheus/prometheus.yml prom/prometheus --config.file=/etc/prometheus/prometheus.yml
+
+
+部署redis和redis-exporter
+
+创建pod
+wenqiao@gnuhpc-pc:~/distributed-systems/adapters$ cat prometheus-redis.yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: adapter-example
+  namespace: tina
+  labels:
+    app: adapter-example
+spec:
+  containers:
+  - image: redis
+    name: redis
+ # Provide an adapter that implements the Prometheus interface
+  - image: oliver006/redis_exporter
+    name: adapter
+    ports:
+    - containerPort: 9121
+    #  hostPort: 19121
+
+
+wenqiao@gnuhpc-pc:~/distributed-systems/adapters$ kubectl create -f  prometheus-redis.yaml
+pod "adapter-example" created
+wenqiao@gnuhpc-pc:~/distributed-systems/adapters$ kubectl get pods -n tina
+NAME              READY     STATUS    RESTARTS   AGE
+adapter-example   2/2       Running   0          1m
+
+wenqiao@gnuhpc-pc:~/distributed-systems/adapters$ cat adapter-service.yml
+apiVersion: v1
+kind: Service
+metadata:
+  name: adapter-redis-service
+  namespace: tina
+  labels:
+    name: adapter-redis-service
+spec:
+  type: NodePort      #这里代表是NodePort类型的
+  ports:
+  - port: 9121          # 这里的端口和clusterIP(10.97.114.36)对应，即10.97.114.36:80,供内部访问。
+    targetPort:  9121   # 端口一定要和container暴露出来的端口对应
+    protocol: TCP
+    nodePort: 31921  # 每个Node会开启，此端口供外部调用。
+  selector:
+    app: adapter-example
+
+创建service 
+kubectl create -f adapter-service.yml
+wenqiao@gnuhpc-pc:~/distributed-systems/adapters$ kubectl describe service adapter-redis-service -n tina
+Name:                     adapter-redis-service
+Namespace:                tina
+Labels:                   name=adapter-redis-service
+Annotations:              <none>
+Selector:                 app=adapter-example
+Type:                     NodePort
+IP:                       10.109.130.100
+Port:                     <unset>  9121/TCP
+TargetPort:               9121/TCP
+NodePort:                 <unset>  31921/TCP
+Endpoints:                10.244.2.125:9121
+Session Affinity:         None
+External Traffic Policy:  Cluster
+Events:                   <none>
+
+修改prometheus的配置文件，加入监控nodeip:31921的配置信息，然后重启prometheus
+wenqiao@gnuhpc-pc:~/prometheus/conf$ cat prometheus.yml
+global:
+  scrape_interval: 15s
+  scrape_timeout: 10s
+  evaluation_interval: 15s
+alerting:
+  alertmanagers:
+  - static_configs:
+    - targets: []
+    scheme: http
+    timeout: 10s
+scrape_configs:
+- job_name: prometheus
+  honor_timestamps: true
+  scrape_interval: 15s
+  scrape_timeout: 10s
+  metrics_path: /metrics
+  scheme: http
+  static_configs:
+  - targets:
+    - 192.168.50.229:19090
+- job_name: redis
+  honor_timestamps: true
+  scrape_interval: 15s
+  scrape_timeout: 10s
+  metrics_path: /metrics
+  scheme: http
+  static_configs:
+  - targets:
+    - 192.168.50.200:31921
+
+访问prometheus界面，可以查到redis的监控数据
+http://192.168.50.229:19090/targets
