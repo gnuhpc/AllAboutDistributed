@@ -1,0 +1,135 @@
+kubectl delete po --all
+kubectl delete StatefulSet --all
+kubectl delete svc --all
+kubectl delete configmap --all
+
+Hands On: Implementing a Sharded Redis
+将底层存储访问请求分发到不同的pod，以redis举例
+
+kubectl create -f redis-shards.yaml 
+kubectl get pods
+kubectl describe pod sharded-redis-0
+systemctl status -l kubelet
+kubectl create -f redis-service.yaml
+原书存在错误，缺少name，即twem-config
+kubectl create configmap twem-config --from-file=nutcracker.yaml
+kubectl create -f twemproxy-ambassador-pod.yaml
+
+出现错误后重做部分：
+kubectl delete configmap twem-config
+kubectl create configmap twem-config --from-file=nutcracker.yaml
+
+kubectl delete po ambassador-example
+kubectl create -f twemproxy-ambassador-pod.yaml
+
+检查pod创建情况：
+kubectl describe po ambassador-example
+
+在启动过程中曾经出现过多次错误，自动进行了back-off，状态处于CrashLoopBackOff，原因是对应docker启动失败
+Events:
+  Type     Reason     Age                  From               Message
+  ----     ------     ----                 ----               -------
+  Normal   Scheduled  5m40s                default-scheduler  Successfully assigned default/ambassador-example to es2
+  Normal   Pulling    39s (x3 over 5m39s)  kubelet, es2       Pulling image "ganomede/twemproxy"
+  Normal   Pulled     32s (x3 over 101s)   kubelet, es2       Successfully pulled image "ganomede/twemproxy"
+  Normal   Created    31s (x3 over 101s)   kubelet, es2       Created container twemproxy
+  Normal   Started    31s (x3 over 101s)   kubelet, es2       Started container twemproxy
+  Warning  BackOff    11s (x2 over 52s)    kubelet, es2       Back-off restarting failed container
+... ...
+Events:
+  Type     Reason     Age                  From               Message
+  ----     ------     ----                 ----               -------
+  Normal   Scheduled  6m12s                default-scheduler  Successfully assigned default/ambassador-example to es2
+  Warning  BackOff    29s (x3 over 84s)    kubelet, es2       Back-off restarting failed container
+  Normal   Pulling    15s (x4 over 6m11s)  kubelet, es2       Pulling image "ganomede/twemproxy"
+  Normal   Pulled     8s (x4 over 2m13s)   kubelet, es2       Successfully pulled image "ganomede/twemproxy"
+  Normal   Created    8s (x4 over 2m13s)   kubelet, es2       Created container twemproxy
+  Normal   Started    7s (x4 over 2m13s)   kubelet, es2       Started container twemproxy
+
+容器多次启动失败，检查容器日志sudo docker logs 5e2a13d32426
+[2019-04-13 13:09:44.123] nc.c:187 nutcracker-0.3.0 built for Linux 4.15.0-47-generic x86_64 started on pid 1
+[2019-04-13 13:09:44.123] nc.c:192 run, rabbit run / dig that hole, forget the sun / and when at last the work is done / don't sit down / it's time to dig another one
+[2019-04-13 13:10:04.143] nc_util.c:495 address resolution of node 'sharded-redis-0.redis' service '6379' failed: Name or service not known
+[2019-04-13 13:10:04.143] nc_conf.c:499 conf: directive "servers" has an invalid value
+[2019-04-13 13:10:04.143] nc.c:198 done, rabbit done
+
+容器启动失败原因：twemproxy-ambassador-pod.yaml里面服务器的地址不能使用主机名，否则将导致twemproxy?无法解析地址，出现上述错误，
+https://github.com/twitter/twemproxy/issues/355
+https://github.com/twitter/twemproxy/issues/64
+ganomede docker image 未解决该bug
+
+修改如下：
+  servers:
+   - 192.168.199.103:6379:1
+   - 192.168.199.104:6379:1
+   - 192.168.199.105:6379:1
+同时地址也不能使用同一个，否则出现下列错误：
+sudo docker logs a7c80bb203ad
+[2019-04-13 14:05:03.167] nc.c:187 nutcracker-0.3.0 built for Linux 4.15.0-47-generic x86_64 started on pid 1
+[2019-04-13 14:05:03.167] nc.c:192 run, rabbit run / dig that hole, forget the sun / and when at last the work is done / don't sit down / it's time to dig another one
+[2019-04-13 14:05:03.167] nc_conf.c:1165 conf: pool 'redis' has servers with same name '192.168.199.103:6379'
+[2019-04-13 14:05:03.167] nc.c:198 done, rabbit done
+
+正常运行后：
+docker状态：
+sudo docker ps -l   
+CONTAINER ID        IMAGE                COMMAND                  CREATED             STATUS              PORTS               NAMES
+b69a70b6ee96        ganomede/twemproxy   "nutcracker -c /etc/…"   8 minutes ago       Up 8 minutes                            k8s_twemproxy_ambassador-example_default_820ee794-5df5-11e9-90cc-000c297295b9_0
+ sudo docker logs b69a70b6ee96
+[2019-04-13 14:07:52.867] nc.c:187 nutcracker-0.3.0 built for Linux 4.15.0-47-generic x86_64 started on pid 1
+[2019-04-13 14:07:52.867] nc.c:192 run, rabbit run / dig that hole, forget the sun / and when at last the work is done / don't sit down / it's time to dig another one
+
+pod状态：
+kubectl get pod 
+NAME                 READY   STATUS    RESTARTS   AGE
+ambassador-example   1/1     Running   0          8m51s
+sharded-redis-0      1/1     Running   0          40m
+sharded-redis-1      1/1     Running   0          40m
+sharded-redis-2      1/1     Running   0          40m
+
+另外一个解决办法：
+在/etc/hosts中加入地址解析
+192.168.199.102 es1 sharded-redis-0.redis sharded-redis-1.redis sharded-redis-2.redis
+替换docker image ganomede/twemproxy为anchorfree/twemproxy
+又小又好用
+REPOSITORY               TAG                 IMAGE ID            CREATED             SIZE
+anchorfree/twemproxy     latest              366a59449b16        7 months ago        12.5MB
+ganomede/twemproxy       latest              8e59cc520af5        3 years ago         281MB
+
+sudo docker ps -l
+CONTAINER ID        IMAGE                  COMMAND                  CREATED             STATUS              PORTS               NAMES
+c5197138171d        anchorfree/twemproxy   "nutcracker -c /etc/…"   4 minutes ago       Up 4 minutes                            k8s_twemproxy_ambassador-example_default_711a4647-5f4c-11e9-8dc9-000c297295b9_0
+
+Hands On: Implementing 10% Experiments
+对数据进行分流处理，在不影响正常生产的情况下降10%的抽样数据用于测试使用
+
+kubectl create -f web-experiment.yaml
+kubectl create configmap experiment-config --from-file=nginx.conf
+kubectl create -f experiments-ambassador-pod.yaml
+
+docker启动失败：
+DNS问题解决后，下列问题都解决
+2019/04/15 02:07:45 [emerg] 1#1: host not found in upstream "web" in /etc/nginx/nginx.conf:13
+nginx: [emerg] host not found in upstream "web" in /etc/nginx/nginx.conf:13
+不能找到service中的对应条目，需要在nginx.conf根据svc中的CLUSTER-IP设置明确的IP
+
+2019/04/15 02:15:26 [emerg] 1#1: a duplicate listen 127.0.0.1:80 in /etc/nginx/nginx.conf:18
+nginx: [emerg] a duplicate listen 127.0.0.1:80 in /etc/nginx/nginx.conf:18
+nginx.conf中server部分的listen不能指定为 localhost:80
+
+2019/04/15 02:27:24 [emerg] 1#1: open() "/etc/nginx/error.log" failed (30: Read-only file system)
+nginx: [emerg] open() "/etc/nginx/error.log" failed (30: Read-only file system)
+nginx.conf中error_log、pid应为：
+error_log  /var/log/nginx/error.log;
+pid        /var/run/nginx.pid;
+
+出现错误后重做部分：
+kubectl delete svc web
+kubectl delete svc experiment
+kubectl create -f web-experiment.yaml
+
+kubectl delete configmap experiment-config
+kubectl create configmap experiment-config --from-file=nginx.conf
+
+kubectl delete po experiment-example
+kubectl create -f experiments-ambassador-pod.yaml
