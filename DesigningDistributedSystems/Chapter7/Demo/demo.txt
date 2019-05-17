@@ -1,0 +1,66 @@
+查看集群状态：
+kubectl get po -o wide -n jiaoyuan
+kubectl get svc -n jiaoyuan
+
+查看es：
+GET 'http://192.168.50.200:31673/_cat/nodes?v'
+GET 'http://192.168.50.200:31673/_cluster/health?pretty'
+
+
+创建索引：
+curl -XPUT 'http://192.168.50.200:31673/animals'	
+
+查看索引：
+curl '192.168.50.200:31673/_cat/indices?v'
+
+添加数据：
+curl -XPUT 'http://192.168.50.200:31673/animals/patents/doc1' -H 'Content-Type:application/json' -d '
+{
+   "type":"Cat and Dog",
+   "text":"Cat and Dog play togather"
+}'
+curl -XPUT 'http://192.168.50.200:31673/animals/patents/doc5' -H 'Content-Type:application/json' -d '
+{
+   "type":"Cat and Dog",
+   "text":"Cat is miaomiao, Dog is wangwang"
+}'
+curl -XPUT 'http://192.168.50.200:31673/animals/patents/doc15' -H 'Content-Type:application/json' -d '
+{
+   "type":"Cat and Dog",
+   "text":"there is a Cat,and here comes a Dog"
+}'
+curl -XPUT 'http://192.168.50.200:31673/animals/patents/doc22' -H 'Content-Type:application/json' -d '
+{
+   "type":"Cat and Dog",
+   "text":"A Cat and A Dog"
+}'
+curl -XPUT 'http://192.168.50.200:31673/animals/patents/doc28' -H 'Content-Type:application/json' -d '
+{
+   "type":"Cat and Dog",
+   "text":"Dog like play with Cat"
+}'
+
+查询数据信息：
+GET 'http://192.168.50.200:31673/animals/_search?pretty'
+
+查看同时包含Cat 和 Dog 的信息
+curl -XPOST '192.168.50.200:31673/animals/_search?pretty' -H 'Content-Type:application/json' -d '
+{
+  "query": {
+    "bool": {
+      "must": [
+        { "match": { "text": "Dog" } },
+        { "match": { "text": "Cat" } }
+      ]
+    }
+  }
+}'
+
+查看数据分布：
+GET 'http://192.168.50.200:31673/_cat/shards?v'
+查看数据路由：
+http://192.168.50.200:31673/animals/_search?routing=doc1
+http://192.168.50.200:31673/animals/_search?routing=doc5
+http://192.168.50.200:31673/animals/_search?routing=doc15
+http://192.168.50.200:31673/animals/_search?routing=doc22
+http://192.168.50.200:31673/animals/_search?routing=doc28
