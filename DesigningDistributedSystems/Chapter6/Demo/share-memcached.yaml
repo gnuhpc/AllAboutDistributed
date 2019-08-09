@@ -1,0 +1,138 @@
+# statefulset for memcached
+apiVersion: apps/v1beta1
+kind: StatefulSet
+metadata:
+  namespace: wuwenqi
+  name: memcache
+spec:
+  serviceName: "memcache"
+  replicas: 3
+  template:
+    metadata:
+      labels:
+        app: memcache
+    spec:
+      terminationGracePeriodSeconds: 10
+      containers:
+      - name: memcache
+        image: memcached
+        ports:
+        - containerPort: 11211
+          name: memcache
+
+---
+# Service for memcached
+apiVersion: v1
+kind: Service
+metadata:
+  name: memcache
+  namespace: wuwenqi
+  labels:
+    app: memcache
+spec:
+  ports:
+  - port: 11211
+    name: memcache
+  clusterIP: None
+  selector:
+    app: memcache
+
+---
+# configMap for twemproxy
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: twem-config
+  namespace: wuwenqi
+data: 
+  nutcracker.yaml: |
+    memcache:
+      listen: 0.0.0.0:11211
+      hash: fnv1a_64
+      distribution: ketama
+      auto_eject_hosts: true
+      timeout: 400
+      server_retry_timeout: 2000
+      server_failure_limit: 1
+      servers:
+       - memcache-0.memcache:11211:1
+       - memcache-1.memcache:11211:1
+       - memcache-2.memcache:11211:1
+---
+# pod for twemproxy
+apiVersion: v1
+kind: Pod
+metadata:
+  name: sharded-memcache-ambassador
+  labels:
+    app: twemproxy
+spec:
+  containers:
+    - name: twemproxy
+      image: ganomede/twemproxy
+      command:
+      - /bin/bash
+      - -c
+      - "nutcracker -c /etc/config/nutcracker.yaml -v 7 -s 6222" 
+      volumeMounts:
+      - name: config-volume
+        mountPath: /etc/config
+  volumes:
+    - name: config-volume
+      configMap:
+        name: twem-config
+        items:
+          - key: nutcracker.yaml
+            path: nutcracker.yaml
+---
+# Deployment for shared-twemproxy
+apiVersion: extensions/v1beta1
+kind: Deployment
+metadata:
+  name: shared-twemproxy
+  namespace: wuwenqi
+spec:
+  replicas: 3
+  template:
+    metadata:
+      labels:
+        app: shared-twemproxy
+    spec:
+      containers:
+      - name: twemproxy
+        image: ganomede/twemproxy
+        command:
+        - /bin/bash
+        - -c
+        - "nutcracker -c /etc/config/nutcracker.yaml -v 7 -s 6222" 
+        volumeMounts:
+        - name: config-volume
+          mountPath: /etc/config
+      volumes:
+      - name: config-volume
+        configMap:
+          name: twem-config
+          items:
+            - key: nutcracker.yaml
+              path: nutcracker.yaml
+
+--- 
+# loadbalance service for twemproxy pods
+kind: Service
+apiVersion: v1
+metadata:
+  name: shard-router-service
+  namespace: wuwenqi
+spec:
+  type: LoadBalancer
+  externalIPs: 
+  - 192.168.50.200
+  - 192.168.50.201
+
+  selector:
+    app: shared-twemproxy
+
+  ports:
+    - protocol: TCP
+      port: 11211
+      targetPort: 11211
