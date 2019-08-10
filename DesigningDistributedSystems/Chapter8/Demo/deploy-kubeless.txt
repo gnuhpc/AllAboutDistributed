@@ -1,0 +1,84 @@
+DEPLOY kubeless
+
+gnuhpc@gnuhpc-pc:~$ unzip kubeless_linux-amd64.zip 
+Archive:  kubeless_linux-amd64.zip
+   creating: bundles/kubeless_linux-amd64/
+  inflating: bundles/kubeless_linux-amd64/kubeless  
+gnuhpc@gnuhpc-pc:~$  cp bundles/kubeless_linux-amd64/kubeless /home/gnuhpc/k8s-1.12/bin/.
+
+gnuhpc@gnuhpc-pc:~$ kubectl create ns kubeless
+namespace/kubeless created
+gnuhpc@gnuhpc-pc:~$ kubectl create -f https://github.com/kubeless/kubeless/releases/download/v1.0.3/kubeless-v1.0.3.yaml
+configmap/kubeless-config created
+deployment.apps/kubeless-controller-manager created
+serviceaccount/controller-acct created
+clusterrole.rbac.authorization.k8s.io/kubeless-controller-deployer created
+clusterrolebinding.rbac.authorization.k8s.io/kubeless-controller-deployer created
+customresourcedefinition.apiextensions.k8s.io/functions.kubeless.io created
+customresourcedefinition.apiextensions.k8s.io/httptriggers.kubeless.io created
+customresourcedefinition.apiextensions.k8s.io/cronjobtriggers.kubeless.io created
+
+gnuhpc@gnuhpc-pc:~$ kubectl create -f https://raw.githubusercontent.com/kubeless/kubeless-ui/master/k8s.yaml -n kubeless
+serviceaccount/ui-acct created
+clusterrole.rbac.authorization.k8s.io/kubeless-ui created
+clusterrolebinding.rbac.authorization.k8s.io/kubeless-ui created
+deployment.extensions/ui created
+service/ui created
+
+gnuhpc@gnuhpc-pc:~$ kubectl get customresourcedefinition
+NAME                          CREATED AT
+cronjobtriggers.kubeless.io   2019-05-21T22:37:31Z
+functions.kubeless.io         2019-05-21T22:37:31Z
+httptriggers.kubeless.io      2019-05-21T22:37:31Z
+
+Kubeless UI
+http://192.168.50.200:31797/#/
+
+DEPLOY:
+gnuhpc@gnuhpc-pc:~$ kubeless function deploy bikesearch -n gnuhpc  --runtime python2.7 --handler city-bikes.find --from-file city-bikes.py
+INFO[0000] Deploying function...                        
+INFO[0000] Function bikesearch submitted for deployment 
+INFO[0000] Check the deployment status executing 'kubeless function ls bikesearch' 
+
+GET STATUES:
+gnuhpc@gnuhpc-pc:~$ kubectl get functions -n gnuhpc
+NAME         AGE
+bikesearch   29s
+gnuhpc@gnuhpc-pc:~$ kubeless function ls -n gnuhpc
+NAME            NAMESPACE       HANDLER         RUNTIME         DEPENDENCIES    STATUS       
+bikesearch      gnuhpc          city-bikes.find python2.7                       0/1 NOT READY
+gnuhpc@gnuhpc-pc:~$ kubeless function ls -n gnuhpc
+NAME            NAMESPACE       HANDLER         RUNTIME         DEPENDENCIES    STATUS   
+bikesearch      gnuhpc          city-bikes.find python2.7                       1/1 READY
+
+CALL:
+gnuhpc@gnuhpc-pc:~$ kubeless function call bikesearch --data '{"term":"Albemarle"}' -n gnuhpc
+[{"availableDocks": 14, "totalDocks": 15, "city": "", "altitude": "", "stAddress2": "", "longitude": -77.079382, "lastCommunicationTime": "2019-05-23 02:13:18 AM", "postalCode": "", "statusValue": "In Service", "testStation": false, "stAddress1": "Tenleytown / Wisconsin Ave & Albemarle St NW", "stationName": "Tenleytown / Wisconsin Ave & Albemarle St NW", "landMark": "", "latitude": 38.947607, "statusKey": 1, "availableBikes": 0, "id": 80, "location": ""}]
+
+gnuhpc@gnuhpc-pc:~$ kubectl proxy --address='0.0.0.0' -p 8080
+Starting to serve on [::]:8080
+
+
+gnuhpc@gnuhpc-pc:~$ curl -L --data '{"term":"Albemarle"}' \
+>   --header "Content-Type:application/json" \
+>   localhost:8080/api/v1/namespaces/gnuhpc/services/bikesearch:http-function-port/proxy/
+
+[{"availableDocks": 14, "totalDocks": 15, "city": "", "altitude": "", "stAddress2": "", "longitude": -77.079382, "lastCommunicationTime": "2019-05-23 02:23:17 AM", "postalCode": "", "statusValue": "In Service", "testStation": false, "stAddress1": "Tenleytown / Wisconsin Ave & Albemarle St NW", "stationName": "Tenleytown / Wisconsin Ave & Albemarle St NW", "landMark": "", "latitude": 38.947607, "statusKey": 1, "availableBikes": 0, "id": 80, "location": ""}]
+
+DEBUG:
+gnuhpc@gnuhpc-pc:~$ kubectl get pods -n gnuhpc
+NAME                          READY   STATUS    RESTARTS   AGE
+bikesearch-74bdcbfcc4-l9txs   1/1     Running   0          19m3
+gnuhpc@gnuhpc-pc:~$ kubectl logs bikesearch-74bdcbfcc4-l9txs  -n gnuhpc
+
+DELETE:
+gnuhpc@gnuhpc-pc:~$ kubeless function delete bikesearch -n gnuhpc
+
+
+
+
+
+
+
+
+
